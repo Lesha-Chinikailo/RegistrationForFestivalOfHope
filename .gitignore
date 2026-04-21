@@ -10,7 +10,7 @@ ENV/
 .venv
 
 # Environment variables
-.env
+.envgit
 .env.local
 .env.*.local
 
@@ -36,3 +36,5 @@ Thumbs.db
 # Project specific
 *.csv
 !requirements.csv  # исключить из игнора если нужно
+
+.idea
