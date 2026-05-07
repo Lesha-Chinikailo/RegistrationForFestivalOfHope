@@ -1,5 +1,6 @@
 import streamlit as st
 import pandas as pd
+import re
 
 # --- НАСТРОЙКА СТРАНИЦЫ ---
 st.set_page_config(page_title="Фестиваль Надежды - Май 16-17", layout="wide", page_icon="🎪")
@@ -36,9 +37,6 @@ st.markdown("""
     h1, h2, h3 {
         color: #2c3e50;
     }
-    .copy-button {
-        margin-top: 10px;
-    }
     </style>
     """, unsafe_allow_html=True)
 
@@ -53,6 +51,31 @@ uploaded_file = st.sidebar.file_uploader(
     help="Файл должен содержать колонки: ФИО, номер телефона, дата (16 или 17)"
 )
 
+
+def clean_phone(phone_str):
+    """Очистка номера телефона от .0 и лишних символов"""
+    if pd.isna(phone_str) or phone_str == 'nan' or phone_str == '':
+        return ''
+    phone_str = str(phone_str)
+    # Убираем .0 в конце
+    if phone_str.endswith('.0'):
+        phone_str = phone_str[:-2]
+    return phone_str
+
+
+def process_date(date_val):
+    """Обработка даты"""
+    if pd.isna(date_val) or date_val == 'nan' or date_val == '' or date_val == '0':
+        return 'Не указано'
+    date_str = str(date_val).strip()
+    if date_str in ['16', '16 мая', '16.0']:
+        return '16 мая'
+    elif date_str in ['17', '17 мая', '17.0']:
+        return '17 мая'
+    else:
+        return 'Другое'
+
+
 if uploaded_file is not None:
     try:
         # Читаем Excel файл
@@ -65,9 +88,9 @@ if uploaded_file is not None:
 
         for col in df.columns:
             col_lower = str(col).lower()
-            if 'фио' in col_lower or 'ф и о' in col_lower or 'ф.и.о' in col_lower or 'фио' in col_lower:
+            if 'фио' in col_lower or 'ф и о' in col_lower or 'ф.и.о' in col_lower:
                 fio_col = col
-            elif 'телефон' in col_lower or 'номер' in col_lower or 'phone' in col_lower or 'телефону' in col_lower:
+            elif 'телефон' in col_lower or 'номер' in col_lower or 'phone' in col_lower:
                 phone_col = col
             elif 'дата' in col_lower or 'date' in col_lower:
                 date_col = col
@@ -84,36 +107,40 @@ if uploaded_file is not None:
             # Переименовываем колонки для удобства
             df_clean = pd.DataFrame()
             df_clean['ФИО'] = df[fio_col].astype(str).str.strip()
-            df_clean['Телефон'] = df[phone_col].astype(str).str.strip()
+            df_clean['Телефон_сырой'] = df[phone_col]
             df_clean['Дата'] = df[date_col].astype(str).str.strip()
 
-            # Удаляем строки, где нет ФИО или телефона
-            df_clean = df_clean[(df_clean['ФИО'] != 'nan') & (df_clean['ФИО'] != '')]
-            df_clean = df_clean[(df_clean['Телефон'] != 'nan') & (df_clean['Телефон'] != '')]
+            # Очищаем телефон от .0
+            df_clean['Телефон'] = df_clean['Телефон_сырой'].apply(clean_phone)
 
+            # НЕ УДАЛЯЕМ строки, а просто заменяем пустые ФИО на пустую строку
+            df_clean['ФИО'] = df_clean['ФИО'].replace('nan', '')
+            df_clean['ФИО'] = df_clean['ФИО'].replace('None', '')
+
+            # Удаляем только полностью пустые строки (где нет ФИО и нет телефона и нет даты)
+            # Но лучше оставить все строки, а пустые ФИО пометить как "Не указано"
+            df_clean['ФИО'] = df_clean['ФИО'].apply(lambda x: x if x and x != '' else 'Без ФИО')
 
             # Обработка дат
-            def process_date(date_val):
-                if date_val in ['16', '16 мая', '16 мая', '16.0']:
-                    return '16 мая'
-                elif date_val in ['17', '17 мая', '17 мая', '17.0']:
-                    return '17 мая'
-                elif date_val == 'nan' or date_val == '' or date_val == 'None' or date_val == '0':
-                    return 'Не указано'
-                else:
-                    return 'Другое'
-
-
             df_clean['Дата_норм'] = df_clean['Дата'].apply(process_date)
 
-            # --- СТАТИСТИКА ---
-            total_count = len(df_clean)
+            # Для строк где нет телефона, ставим прочерк
+            df_clean['Телефон_отобр'] = df_clean['Телефон'].apply(lambda x: x if x and x != 'nan' and x != '' else '—')
+
+            # --- ПОКАЗЫВАЕМ ОБЩЕЕ КОЛИЧЕСТВО СТРОК В ФАЙЛЕ ---
+            total_rows_in_file = len(df)
+            total_with_fio = len(df_clean[df_clean['ФИО'] != 'Без ФИО'])
+
+            # --- СТАТИСТИКА (считаем по всем, у кого есть ФИО, включая тех, у кого нет телефона) ---
+            total_count = len(df_clean)  # Все строки
             count_16 = len(df_clean[df_clean['Дата_норм'] == '16 мая'])
             count_17 = len(df_clean[df_clean['Дата_норм'] == '17 мая'])
             count_other = len(df_clean[df_clean['Дата_норм'] == 'Не указано']) + len(
                 df_clean[df_clean['Дата_норм'] == 'Другое'])
 
             # Отображаем статистику
+            st.subheader("📊 Статистика участников")
+
             col1, col2, col3, col4 = st.columns(4)
             with col1:
                 st.metric("📊 Всего участников", total_count)
@@ -124,39 +151,50 @@ if uploaded_file is not None:
             with col4:
                 st.metric("❓ Без даты / Другое", count_other)
 
+            # Показываем предупреждение если есть расхождения
+            if total_rows_in_file != total_count:
+                st.warning(f"ℹ️ В файле всего {total_rows_in_file} строк, из них {total_count} с заполненными данными")
+
             # --- ВКЛАДКИ ДЛЯ СПИСКОВ ---
             tab1, tab2, tab3 = st.tabs(["📅 Список на 16 мая", "📅 Список на 17 мая", "📋 Остальные участники"])
 
 
-            # Функция для создания текста списка
+            # Функция для создания текста списка (нумерация с 1)
             def create_list_text(dataframe, title):
                 text = f"🎪 *{title}*\n" + "━" * 30 + "\n\n"
-                for idx, row in dataframe.iterrows():
-                    name = row['ФИО']
-                    # Убираем "nan" если вдруг появилось
-                    if name.lower() == 'nan' or not name:
-                        continue
-                    text += f"{idx + 1}. {name}\n"
+                valid_entries = dataframe[dataframe['ФИО'] != 'Без ФИО']
+                for idx, row in enumerate(valid_entries.iterrows(), 1):
+                    name = row[1]['ФИО']
+                    if name and name != 'Без ФИО':
+                        text += f"{idx}. {name}\n"
                 text += "\n" + "━" * 30 + "\n"
-                text += f"📊 *Итого: {len(dataframe)} участников*"
+                text += f"📊 *Итого: {len(valid_entries)} участников*"
                 return text
+
+
+            # Функция для отображения таблицы
+            def display_table(dataframe, title):
+                if not dataframe.empty:
+                    st.subheader(title)
+                    # Подготавливаем данные для отображения
+                    display_df = dataframe[['ФИО', 'Телефон_отобр']].copy()
+                    display_df.columns = ['ФИО', 'Телефон']
+                    st.dataframe(display_df, use_container_width=True)
+                    return True
+                return False
 
 
             # Вкладка 1 - 16 мая
             with tab1:
-                st.subheader("🎯 Участники на 16 мая")
-
                 df_16 = df_clean[df_clean['Дата_норм'] == '16 мая'].copy()
                 df_16 = df_16.reset_index(drop=True)
 
                 if not df_16.empty:
-                    # Отображаем таблицу
-                    st.dataframe(df_16[['ФИО', 'Телефон']], use_container_width=True)
+                    display_table(df_16, "🎯 Участники на 16 мая")
 
                     # Создаем текст списка
                     list_text = create_list_text(df_16, "СПИСОК УЧАСТНИКОВ НА 16 МАЯ")
 
-                    # Используем text_area для копирования
                     st.text_area(
                         "📋 Скопируйте список (Ctrl+A, Ctrl+C):",
                         value=list_text,
@@ -171,16 +209,12 @@ if uploaded_file is not None:
 
             # Вкладка 2 - 17 мая
             with tab2:
-                st.subheader("🎯 Участники на 17 мая")
-
                 df_17 = df_clean[df_clean['Дата_норм'] == '17 мая'].copy()
                 df_17 = df_17.reset_index(drop=True)
 
                 if not df_17.empty:
-                    # Отображаем таблицу
-                    st.dataframe(df_17[['ФИО', 'Телефон']], use_container_width=True)
+                    display_table(df_17, "🎯 Участники на 17 мая")
 
-                    # Создаем текст списка
                     list_text = create_list_text(df_17, "СПИСОК УЧАСТНИКОВ НА 17 МАЯ")
 
                     st.text_area(
@@ -197,18 +231,17 @@ if uploaded_file is not None:
 
             # Вкладка 3 - Остальные (без даты или другое)
             with tab3:
-                st.subheader("❓ Участники без указанной даты или с другими датами")
-
                 df_other = df_clean[df_clean['Дата_норм'].isin(['Не указано', 'Другое'])].copy()
                 df_other = df_other.reset_index(drop=True)
 
                 if not df_other.empty:
-                    # Показываем какие даты были в оригинале
+                    st.subheader("❓ Участники без указанной даты или с другими датами")
                     st.caption("ℹ️ Здесь отображаются участники, у которых в колонке 'дата' не указано '16' или '17'")
 
                     # Отображаем таблицу с оригинальной датой
-                    df_other_display = df_other[['ФИО', 'Телефон', 'Дата']].copy()
-                    st.dataframe(df_other_display, use_container_width=True)
+                    display_df = df_other[['ФИО', 'Телефон_отобр', 'Дата']].copy()
+                    display_df.columns = ['ФИО', 'Телефон', 'Исходная дата']
+                    st.dataframe(display_df, use_container_width=True)
 
                     # Список только с ФИО
                     list_text = create_list_text(df_other, "УЧАСТНИКИ БЕЗ УКАЗАННОЙ ДАТЫ")
@@ -227,10 +260,13 @@ if uploaded_file is not None:
 
             # --- ДОПОЛНИТЕЛЬНО: ПОЛНАЯ ТАБЛИЦА ---
             with st.expander("📊 Показать полную таблицу всех участников"):
-                st.dataframe(df_clean[['ФИО', 'Телефон', 'Дата_норм', 'Дата']], use_container_width=True)
+                full_display = df_clean[['ФИО', 'Телефон_отобр', 'Дата_норм', 'Дата']].copy()
+                full_display.columns = ['ФИО', 'Телефон', 'Нормализованная дата', 'Исходная дата']
+                st.dataframe(full_display, use_container_width=True)
 
-                # Экспорт в CSV
-                csv = df_clean[['ФИО', 'Телефон', 'Дата_норм']].to_csv(index=False)
+                # Экспорт в CSV (без .0 в телефонах)
+                export_df = df_clean[['ФИО', 'Телефон', 'Дата_норм']].copy()
+                csv = export_df.to_csv(index=False, encoding='utf-8-sig')
                 st.download_button(
                     label="📥 Скачать полный список в CSV",
                     data=csv,
@@ -241,20 +277,13 @@ if uploaded_file is not None:
 
         else:
             st.error(f"❌ Не удалось определить колонки в файле.")
-            st.info(f"**Доступные колонки:** {list(df.columns)}")
+            st.info(f"**Доступные колонки в файле:** {list(df.columns)}")
+            st.info(f"**Всего строк в файле:** {len(df)}")
             st.info("""
             **Ожидаемая структура файла:**
             - Колонка с ФИО (должна содержать слова "ФИО", "Ф.И.О" или быть второй по счету)
             - Колонка с телефоном (должна содержать слова "телефон", "номер" или быть третьей по счету)
             - Колонка с датой (должна содержать слова "дата" или быть пятой по счету)
-
-            **Пример:** если ваш файл имеет колонки как на фото:
-            - 1-й столбец: № (пропускаем)
-            - 2-й столбец: ФИО (используем)
-            - 3-й столбец: номер телефона (используем)
-            - 4-й столбец: в группе (пропускаем)
-            - 5-й столбец: дата (используем)
-            - 6-й столбец: кто пригласил (пропускаем)
             """)
 
     except Exception as e:
@@ -282,19 +311,21 @@ else:
     4. **Статистика** покажет общее количество и разбивку по дням
 
     ### ⚠️ Важно:
-    - Файл загружается только для чтения, изменения не сохраняются
-    - Если в колонке "дата" пусто или другое значение - такие участники попадают в отдельный список
+    - Теперь программа считает **ВСЕХ** участников, у которых есть ФИО
+    - Если нет номера телефона, отображается прочерк "—"
+    - Если нет даты, участник попадает в отдельную категорию
     """)
 
     # Пример файла
     st.markdown("---")
     st.markdown("### 📝 Пример структуры файла:")
     example_df = pd.DataFrame({
-        '№': [1, 2, 3],
-        'ФИО': ['Иванов Иван Иванович', 'Петрова Анна Сергеевна', 'Сидоров Петр Николаевич'],
-        'номер телефона': ['+375291234567', '+375293334455', '+375297778899'],
-        'в группе': ['+', '', '+'],
-        'дата': ['16', '17', ''],
-        'кто пригласил': ['Анна', '', 'Мария']
+        '№': [1, 2, 3, 4],
+        'ФИО': ['Иванов Иван Иванович', 'Петрова Анна Сергеевна', 'Сидоров Петр Николаевич', 'Козлова Мария'],
+        'номер телефона': ['+375291234567', '+375293334455', '', '+375297778899'],
+        'в группе': ['+', '', '+', ''],
+        'дата': ['16', '17', '', '16'],
+        'кто пригласил': ['Анна', '', 'Мария', 'Иван']
     })
     st.dataframe(example_df, use_container_width=True)
+    st.caption("ℹ️ В примере: у Сидорова нет телефона, но он отобразится в списке (с прочерком в колонке телефона)")
